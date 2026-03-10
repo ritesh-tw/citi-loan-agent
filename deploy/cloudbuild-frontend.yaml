@@ -1,0 +1,17 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/genesis/loan-agent-frontend:latest'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_API_URL=https://loan-agent-backend-632353252476.us-central1.run.app'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_BEARER_TOKEN=citi-poc-demo-token'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_ADMIN_PASSWORD=Trustwise@citibank'
+      - '-f'
+      - 'frontend/Dockerfile'
+      - 'frontend'
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/genesis/loan-agent-frontend:latest'

@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - loan_application_agent/.env
+    volumes:
+      - ./loan_application_agent:/app/loan_application_agent
+      - ./server:/app/server
+    command: uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_BEARER_TOKEN=${API_BEARER_TOKEN:-citi-poc-demo-token}
+    depends_on:
+      - backend
