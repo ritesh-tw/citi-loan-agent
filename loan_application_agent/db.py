@@ -15,7 +15,7 @@ DATABASE_URL = os.getenv(
 @contextmanager
 def get_connection():
     """Get a database connection from the pool."""
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
     try:
         yield conn
         conn.commit()

@@ -32,7 +32,7 @@ import os
 import uuid
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api", tags=["Chat API"])
@@ -105,6 +105,8 @@ def _token_user_id(token: str) -> str:
 # In-memory session tracking per user (maps user_id -> current session_id)
 _active_sessions: dict[str, str] = {}
 _session_turns: dict[str, int] = {}
+# Maps local session_id -> Agent Engine session_id for multi-turn support
+_ae_session_map: dict[str, str] = {}
 
 
 class ChatRequest(BaseModel):
@@ -237,104 +239,59 @@ async def _prescreen_with_gateway(question: str) -> str | None:
         return None
 
 
-async def _call_internal_api(
-    request: Request,
+async def _call_agent_engine(
     user_id: str,
     session_id: str,
     question: str,
-    bearer_token: str,
 ) -> tuple[str, str, list[str]]:
-    """Call the internal ADK /run endpoint and extract clean response."""
-    # Pre-screen the message against the gateway directly to get exact error details.
-    # ADK swallows gateway 422 errors as generic 500s, losing the policy name and
-    # guardrail details. By calling the gateway first, we capture the exact reason.
+    """Call Agent Engine and extract clean response."""
+    # Pre-screen the message against the gateway directly
     gateway_error = await _prescreen_with_gateway(question)
     if gateway_error:
         return gateway_error, "gateway_policy", []
 
-    # Build internal base URL — use localhost for internal calls (avoids HTTPS/proxy issues)
-    port = request.url.port or 8000
-    base_url = f"http://localhost:{port}"
+    try:
+        from .main import _call_agent_engine as ae_call, _stream_agent_engine
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {bearer_token}",
-    }
+        # Reuse existing AE session or create a new one
+        ae_session_id = _ae_session_map.get(session_id, "")
+        if not ae_session_id:
+            session_result = ae_call("create_session", user_id=user_id)
+            ae_session_id = session_result.get("id", "")
+            if ae_session_id and session_id:
+                _ae_session_map[session_id] = ae_session_id
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        # Ensure session exists
-        await client.post(
-            f"{base_url}/apps/{APP_NAME}/users/{user_id}/sessions/{session_id}",
-            headers=headers,
-            json={},
-        )
+        # Stream query via Agent Engine
+        texts = []
+        tools_used = []
+        last_author = ""
 
-        # Send message via /run
-        resp = await client.post(
-            f"{base_url}/run",
-            headers=headers,
-            json={
-                "app_name": APP_NAME,
-                "user_id": user_id,
-                "session_id": session_id,
-                "new_message": {
-                    "role": "user",
-                    "parts": [{"text": question}],
-                },
-            },
-        )
+        for event in _stream_agent_engine(
+            "stream_query",
+            user_id=user_id,
+            session_id=ae_session_id,
+            message=question,
+        ):
+            author = event.get("author", "")
+            parts = event.get("content", {}).get("parts", [])
+            for part in parts:
+                text = part.get("text", "")
+                if text and "transfer_to_agent" not in text and "functions." not in text:
+                    texts.append(text)
+                    last_author = author
+                fc = part.get("functionCall")
+                if fc and fc.get("name") != "transfer_to_agent":
+                    tools_used.append(fc["name"])
 
-        if resp.status_code != 200:
-            # Pre-screen should have caught gateway policy errors above.
-            # If ADK still returns an error, provide a fallback message.
-            if resp.status_code == 500:
-                return (
-                    "Something went wrong while processing your request. "
-                    "The agent encountered an internal error. Please try again.",
-                    "system",
-                    [],
-                )
+        answer = " ".join(texts).strip()
+        return answer, last_author, list(set(tools_used))
 
-            raise HTTPException(
-                status_code=resp.status_code,
-                detail=f"Agent error: {resp.text[:200]}",
-            )
-
-        events = resp.json()
-
-    # Extract clean text, tools, and author from ADK events
-    texts = []
-    tools_used = []
-    last_author = ""
-
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-
-        author = event.get("author", "")
-        parts = event.get("content", {}).get("parts", [])
-
-        for part in parts:
-            # Collect text (skip internal routing noise)
-            text = part.get("text", "")
-            if text:
-                if "transfer_to_agent" in text or "functions." in text:
-                    continue
-                texts.append(text)
-                last_author = author
-
-            # Collect tool calls
-            fc = part.get("functionCall")
-            if fc and fc.get("name") != "transfer_to_agent":
-                tools_used.append(fc["name"])
-
-    answer = " ".join(texts).strip()
-    return answer, last_author, list(set(tools_used))
+    except Exception as e:
+        return f"Error communicating with Agent Engine: {str(e)}", "system", []
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
-    request: Request,
     body: ChatRequest,
     authorization: str = Header(...),
 ):
@@ -364,12 +321,9 @@ async def chat(
 
     _active_sessions[user_id] = session_id
 
-    # Get the actual bearer token to use for internal calls
-    internal_token = os.getenv("API_BEARER_TOKEN", token)
-
-    # Call internal /run endpoint
-    answer, agent, tools = await _call_internal_api(
-        request, user_id, session_id, body.question, internal_token
+    # Call Agent Engine
+    answer, agent, tools = await _call_agent_engine(
+        user_id, session_id, body.question
     )
 
     if not answer:
@@ -390,13 +344,12 @@ async def chat(
 
 @router.post("/chat/new", response_model=ChatResponse)
 async def chat_new_session(
-    request: Request,
     body: ChatRequest,
     authorization: str = Header(...),
 ):
     """Start a new conversation session. Shortcut for {"new_session": true}."""
     body.new_session = True
-    return await chat(request, body, authorization)
+    return await chat(body, authorization)
 
 
 @router.get("/chat/sessions")

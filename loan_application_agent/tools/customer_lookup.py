@@ -75,19 +75,28 @@ def lookup_customer(
     Returns:
         Customer details if found, or a not-found message.
     """
-    row = fetch_one(
-        """
-        SELECT customer_id, first_name, last_name, date_of_birth, postcode,
-               email, phone, account_opened, account_type, risk_score,
-               eligibility_flags, existing_credit_obligations,
-               annual_income, employment_status, residency_status
-        FROM customers
-        WHERE LOWER(last_name) = LOWER(%s)
-          AND UPPER(REPLACE(postcode, ' ', '')) = UPPER(REPLACE(%s, ' ', ''))
-          AND date_of_birth = %s
-        """,
-        (last_name.strip(), postcode.strip(), date_of_birth.strip()),
-    )
+    try:
+        row = fetch_one(
+            """
+            SELECT customer_id, first_name, last_name, date_of_birth, postcode,
+                   email, phone, account_opened, account_type, risk_score,
+                   eligibility_flags, existing_credit_obligations,
+                   annual_income, employment_status, residency_status
+            FROM customers
+            WHERE LOWER(last_name) = LOWER(%s)
+              AND UPPER(REPLACE(postcode, ' ', '')) = UPPER(REPLACE(%s, ' ', ''))
+              AND date_of_birth = %s
+            """,
+            (last_name.strip(), postcode.strip(), date_of_birth.strip()),
+        )
+    except Exception:
+        return {
+            "found": False,
+            "message": (
+                "We're currently unable to access customer records. "
+                "We can continue with your application as a new customer."
+            ),
+        }
 
     if not row:
         return {

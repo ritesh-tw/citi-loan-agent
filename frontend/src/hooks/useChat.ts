@@ -43,11 +43,16 @@ export function useChat() {
   const initSession = useCallback(async () => {
     if (sessionCreated.current || !sessionRef.current.userId) return;
     try {
-      await createSession(
+      // Agent Engine assigns its own session IDs — use the returned one
+      const serverSessionId = await createSession(
         sessionRef.current.appName,
         sessionRef.current.userId,
         sessionRef.current.sessionId
       );
+      if (serverSessionId !== sessionRef.current.sessionId) {
+        setSession((prev) => ({ ...prev, sessionId: serverSessionId }));
+        sessionRef.current = { ...sessionRef.current, sessionId: serverSessionId };
+      }
       sessionCreated.current = true;
     } catch (err) {
       console.error("Failed to create session:", err);
@@ -201,9 +206,34 @@ export function useChat() {
             }
           }
         },
-        // onError
+        // onError — show whatever error details we got from the server
         (err: Error) => {
-          setError(err.message);
+          let errorContent = err.message || "Something went wrong.";
+
+          // Try to parse JSON error body (e.g., gateway policy error)
+          try {
+            const parsed = JSON.parse(errorContent);
+            if (parsed.error?.message) {
+              errorContent = parsed.error.message;
+            } else if (parsed.detail) {
+              errorContent = parsed.detail;
+            }
+          } catch {
+            // Not JSON — use raw message as-is
+          }
+
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: errorContent,
+                    author: "System",
+                    isStreaming: false,
+                  }
+                : m
+            )
+          );
           setIsLoading(false);
         },
         // onComplete

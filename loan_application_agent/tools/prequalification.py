@@ -126,17 +126,26 @@ def run_prequalification(
 
     # Fetch product details and rules
     from ..db import fetch_one
-    product = fetch_one(
-        "SELECT * FROM loan_products WHERE product_code = %s AND is_active = TRUE",
-        (product_code.upper(),),
-    )
+    try:
+        product = fetch_one(
+            "SELECT * FROM loan_products WHERE product_code = %s AND is_active = TRUE",
+            (product_code.upper(),),
+        )
+    except Exception:
+        return {
+            "decision": "error",
+            "message": "Unable to access product database at this time. Please try again later.",
+        }
     if not product:
         return {"decision": "error", "message": f"Product '{product_code}' not found or inactive."}
 
-    rules = fetch_all(
-        "SELECT * FROM prequalification_rules WHERE product_code = %s AND is_active = TRUE ORDER BY priority",
-        (product_code.upper(),),
-    )
+    try:
+        rules = fetch_all(
+            "SELECT * FROM prequalification_rules WHERE product_code = %s AND is_active = TRUE ORDER BY priority",
+            (product_code.upper(),),
+        )
+    except Exception:
+        rules = []
 
     # Run pre-qualification engine
     decline_reasons = []

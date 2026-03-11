@@ -30,7 +30,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
         {/* Tool calls indicator — hide internal ADK tools like transfer_to_agent */}
         {!isUser && message.toolCalls && (() => {
           const visible = message.toolCalls.filter(
-            (t) => t.status === "completed" && t.name !== "transfer_to_agent"
+            (t) => t.name !== "transfer_to_agent"
           );
           return visible.length > 0 ? <ToolIndicator tools={visible} /> : null;
         })()}

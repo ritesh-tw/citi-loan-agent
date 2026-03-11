@@ -10,6 +10,7 @@ by exporting `root_agent`, making it compatible with:
 
 from google.adk.agents import LlmAgent
 
+from .gateway_guard import gateway_prescreen_callback
 from .instructions import ROOT_INSTRUCTION
 from .model_config import get_model
 from .sub_agents.greeting_agent import create_greeting_agent
@@ -24,6 +25,7 @@ root_agent = LlmAgent(
     description="Citibank UK Loan Application Agent — routes to specialized sub-agents for greeting, identity check, loan exploration, and pre-qualification",
     instruction=ROOT_INSTRUCTION,
     tools=[get_current_time],
+    before_model_callback=gateway_prescreen_callback,
     sub_agents=[
         create_greeting_agent(),
         create_identity_agent(),

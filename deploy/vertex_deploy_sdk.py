@@ -63,9 +63,10 @@ def deploy():
     # Test locally first
     print("Testing agent locally...")
     test_session = app.create_session(user_id="test-deploy")
+    session_id = test_session.id if hasattr(test_session, "id") else test_session["id"]
     response = app.stream_query(
         user_id="test-deploy",
-        session_id=test_session["id"],
+        session_id=session_id,
         message="Hello",
     )
     for event in response:
@@ -88,14 +89,8 @@ def deploy():
             "psycopg2-binary>=2.9.0",
             "python-dotenv>=1.0.0",
             "google-cloud-aiplatform[adk]>=1.76.0",
+            "httpx>=0.27.0",
         ],
-        env_vars={
-            "DATABASE_URL": CLOUD_SQL_URL,
-            "LLM_GATEWAY_BASE_URL": "https://aigw.tw-forge.trustwise.ai",
-            "LLM_GATEWAY_API_KEY": "sk-NebaTwT-LDV8MGphvjlD9w",
-            "LLM_MODEL": "gpt-4o-mini",
-            "ENABLE_CLOUD_TRACE": "true",
-        },
     )
 
     print()

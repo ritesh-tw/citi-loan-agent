@@ -46,7 +46,14 @@ export async function sendMessageSSE(
     });
 
     if (!res.ok) {
-      throw new Error(`API error: ${res.status} ${res.statusText}`);
+      // Try to read the response body for detailed error info
+      let detail = "";
+      try {
+        detail = await res.text();
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || `API error: ${res.status} ${res.statusText}`);
     }
 
     const reader = res.body?.getReader();
@@ -117,13 +124,14 @@ export async function sendMessage(
 }
 
 /**
- * Create a new session.
+ * Create a new session. Returns the server-assigned session ID
+ * (Agent Engine assigns its own IDs).
  */
 export async function createSession(
   appName: string,
   userId: string,
   sessionId: string
-): Promise<void> {
+): Promise<string> {
   const res = await fetch(
     `${API_BASE}/apps/${appName}/users/${userId}/sessions/${sessionId}`,
     {
@@ -136,6 +144,45 @@ export async function createSession(
   if (!res.ok) {
     throw new Error(`Failed to create session: ${res.status}`);
   }
+
+  const data = await res.json();
+  return data.id || sessionId;
+}
+
+/**
+ * Send a message via the simplified /api/chat endpoint.
+ * This endpoint handles gateway policy errors gracefully and returns
+ * a clean response with the error details.
+ * Used as a fallback when SSE fails (e.g., gateway blocks the message).
+ */
+export interface ChatResponse {
+  answer: string;
+  session_id: string;
+  agent: string;
+  tools_used: string[];
+  turn: number;
+}
+
+export async function sendChatMessage(
+  message: string,
+  sessionId?: string,
+  newSession?: boolean
+): Promise<ChatResponse> {
+  const body: Record<string, unknown> = { question: message };
+  if (sessionId) body.session_id = sessionId;
+  if (newSession) body.new_session = true;
+
+  const res = await fetch(`${API_BASE}/api/chat`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Chat API error: ${res.status} ${res.statusText}`);
+  }
+
+  return res.json();
 }
 
 /**
