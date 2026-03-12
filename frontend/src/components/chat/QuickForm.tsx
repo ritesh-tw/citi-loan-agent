@@ -6,6 +6,7 @@ interface QuickFormProps {
   onSubmit: (message: string) => void;
   disabled: boolean;
   formType: "identity" | "personal_info" | "prequalification" | null;
+  initialValues?: Record<string, string>;
 }
 
 const IDENTITY_FIELDS = [
@@ -104,9 +105,9 @@ const FORM_CONFIG = {
   },
 };
 
-export default function QuickForm({ onSubmit, disabled, formType }: QuickFormProps) {
+export default function QuickForm({ onSubmit, disabled, formType, initialValues = {} }: QuickFormProps) {
   const [expanded, setExpanded] = useState(false);
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, string>>(initialValues);
 
   if (!formType) return null;
 

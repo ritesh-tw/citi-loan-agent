@@ -25,6 +25,9 @@ def get_model() -> LiteLlm:
     api_base = os.getenv("LLM_GATEWAY_BASE_URL", "https://aigw.tw-forge.trustwise.ai")
     api_key = os.getenv("LLM_GATEWAY_API_KEY", "")
 
+    # Always use 'openai/' prefix so LiteLlm routes through the gateway
+    # (OpenAI-compatible API). The actual model name (e.g. 'vertex_ai/gemini-2.0-flash')
+    # is passed to the gateway which handles provider routing.
     return LiteLlm(
         model=f"openai/{model_name}",
         api_base=api_base,

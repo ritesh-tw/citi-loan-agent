@@ -54,8 +54,12 @@ _FALLBACK_PRODUCTS = {
 _FALLBACK_DETAILS = {p["product_code"]: p for p in _FALLBACK_PRODUCTS["products"]}
 
 
-def get_loan_products() -> dict:
+def get_loan_products(category: str = "all") -> dict:
     """Get a summary of all available Citibank UK loan products.
+
+    Args:
+        category: Filter by product category. Use 'all' to see everything.
+            Options: all, personal, debt_consolidation, home_improvement.
 
     Returns a list of active loan products with key details including
     APR ranges, borrowing limits, and main features.

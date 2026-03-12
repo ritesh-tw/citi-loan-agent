@@ -1,1 +1,4 @@
-{}
+{
+  "display_name": "loan_application_agent",
+  "description": "Citibank UK Loan Application Agent - 4-stage workflow with identity verification, loan exploration, and pre-qualification"
+}

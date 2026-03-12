@@ -20,6 +20,58 @@ REQUIRED_FIELDS = [
     "residency_status",
 ]
 
+# Fallback product data used when the database is unavailable (mirrors seed_db values)
+_FALLBACK_PRODUCTS = {
+    "PERS_LOAN": {
+        "product_code": "PERS_LOAN",
+        "product_name": "Citi Personal Loan",
+        "min_amount": 1000.0,
+        "max_amount": 25000.0,
+        "min_term_months": 12,
+        "max_term_months": 60,
+        "representative_apr": 9.9,
+        "min_apr": 6.9,
+        "max_apr": 29.9,
+        "eligibility_criteria": {
+            "min_income": 12000,
+            "residency": ["uk_resident", "uk_visa"],
+            "employment": ["full_time", "part_time", "self_employed", "retired"],
+        },
+    },
+    "DEBT_CONSOL": {
+        "product_code": "DEBT_CONSOL",
+        "product_name": "Citi Debt Consolidation Loan",
+        "min_amount": 5000.0,
+        "max_amount": 50000.0,
+        "min_term_months": 24,
+        "max_term_months": 84,
+        "representative_apr": 7.9,
+        "min_apr": 5.9,
+        "max_apr": 19.9,
+        "eligibility_criteria": {
+            "min_income": 18000,
+            "residency": ["uk_resident"],
+            "employment": ["full_time", "part_time", "self_employed"],
+        },
+    },
+    "HOME_IMPROV": {
+        "product_code": "HOME_IMPROV",
+        "product_name": "Citi Home Improvement Loan",
+        "min_amount": 7500.0,
+        "max_amount": 50000.0,
+        "min_term_months": 12,
+        "max_term_months": 120,
+        "representative_apr": 6.9,
+        "min_apr": 4.9,
+        "max_apr": 14.9,
+        "eligibility_criteria": {
+            "min_income": 20000,
+            "residency": ["uk_resident"],
+            "employment": ["full_time", "part_time", "self_employed", "retired"],
+        },
+    },
+}
+
 
 def collect_application_info(
     field_name: str,
@@ -55,8 +107,14 @@ def collect_application_info(
     }
 
 
-def validate_application_info(tool_context: ToolContext) -> dict:
+def validate_application_info(
+    check_type: str = "all",
+    tool_context: ToolContext = None,
+) -> dict:
     """Check which required fields are still needed for the loan application.
+
+    Args:
+        check_type: What to validate. Use 'all' to check all fields.
 
     Returns the current application data, missing fields, and completion status.
     """
@@ -126,18 +184,19 @@ def run_prequalification(
 
     # Fetch product details and rules
     from ..db import fetch_one
+    product = None
     try:
         product = fetch_one(
             "SELECT * FROM loan_products WHERE product_code = %s AND is_active = TRUE",
             (product_code.upper(),),
         )
     except Exception:
-        return {
-            "decision": "error",
-            "message": "Unable to access product database at this time. Please try again later.",
-        }
+        pass  # Fall through to fallback below
+
     if not product:
-        return {"decision": "error", "message": f"Product '{product_code}' not found or inactive."}
+        product = _FALLBACK_PRODUCTS.get(product_code.upper())
+        if not product:
+            return {"decision": "error", "message": f"Product '{product_code}' not found or inactive."}
 
     try:
         rules = fetch_all(

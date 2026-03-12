@@ -45,8 +45,14 @@ def collect_personal_info(
     }
 
 
-def validate_personal_info(tool_context: ToolContext) -> dict:
+def validate_personal_info(
+    check_type: str = "all",
+    tool_context: ToolContext = None,
+) -> dict:
     """Check which personal information fields are still needed from the user.
+
+    Args:
+        check_type: What to validate. Use 'all' to check all fields.
 
     Returns the current collected data, missing fields, and completion status.
     """
