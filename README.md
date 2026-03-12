@@ -1,331 +1,287 @@
 # Citi Loan Application Agent
 
-AI-powered loan application assistant built with **Google ADK**, routed through **Trustwise LLM Gateway** for policy enforcement, deployable to **Google Cloud Run** and **Vertex AI Agent Engine**.
+AI-powered loan application assistant built with **Google ADK**, deployed on **Vertex AI Agent Engine** and **Cloud Run**, with all LLM traffic routed through the **Trustwise LLM Gateway** for policy enforcement.
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────────────────────────┐     ┌──────────────────┐
-│  React UI   │────▶│  FastAPI (Auth + ADK Server)          │────▶│ Trustwise LLM GW │
-│  (Next.js)  │ SSE │                                      │     │  (Policy enforce) │
-│             │◀────│  /run_sse (streaming)                 │◀────│  OWASP Top 10    │
-└─────────────┘     │  /api/chat (simplified)               │     └──────────────────┘
-                    │                                      │
-  Trustwise Eval    │  Agents:                             │     ┌──────────────────┐
-  System ──────────▶│  ├── greeting_agent                  │────▶│ PostgreSQL DB    │
-  (Bearer Token)    │  ├── identity_agent                  │     │ (customers, loans)│
-                    │  ├── loan_explorer_agent              │     └──────────────────┘
-                    │  ├── prequalification_agent           │
-                    │  └── qa_agent                         │
-                    └──────────────────────────────────────┘
+┌──────────────────────┐     SSE/HTTP     ┌──────────────────────────────┐
+│   Next.js Frontend   │ ──────────────▶  │   FastAPI Backend (Cloud Run) │
+│   (Cloud Run)        │ ◀──────────────  │   /run_sse  /api/chat         │
+└──────────────────────┘                  └──────────────┬───────────────┘
+                                                         │ Vertex AI SDK
+                                                         ▼
+                                          ┌──────────────────────────────┐
+                                          │  Vertex AI Agent Engine       │
+                                          │                               │
+                                          │  loan_application_agent       │
+                                          │  (single LlmAgent)            │
+                                          │                               │
+                                          │  Tools:                       │
+                                          │  ├── lookup_customer          │
+                                          │  ├── collect_personal_info    │
+                                          │  ├── validate_personal_info   │
+                                          │  ├── get_loan_products        │
+                                          │  ├── get_product_details      │
+                                          │  ├── collect_application_info │
+                                          │  ├── validate_application_info│
+                                          │  └── run_prequalification     │
+                                          └──────────┬───────────────────┘
+                                                     │
+                              ┌──────────────────────┼──────────────────────┐
+                              ▼                      ▼                      ▼
+                 ┌────────────────────┐  ┌───────────────────┐  ┌──────────────────┐
+                 │  Trustwise LLM GW  │  │  Cloud SQL        │  │  Cloud Trace /   │
+                 │  (before_model     │  │  (PostgreSQL)     │  │  Cloud Logging   │
+                 │   callback guard)  │  │  customers, loans │  │  (telemetry)     │
+                 │  OWASP Top 10      │  │  Private IP via   │  └──────────────────┘
+                 │  Prompt Injection  │  │  VPC Connector    │
+                 └────────────────────┘  └───────────────────┘
 ```
+
+## Agent Design — Single-Agent Architecture
+
+The agent is a **single `LlmAgent`** (no sub-agents). Stage routing is handled entirely by the LLM through tool selection, guided by a structured `UNIFIED_INSTRUCTION` with a mandatory reasoning protocol.
+
+### 4-Stage Workflow
+
+| Stage | Name | What happens |
+|-------|------|-------------|
+| 1 | Greeting & Intent | Welcome, understand what the user wants |
+| 2 | Identity Verification | KYC — collect name, DOB, postcode; look up in DB |
+| 3 | Loan Exploration | Show products, rates, and terms (no identity required) |
+| 4 | Pre-Qualification | Collect financial info; run eligibility check (requires Stage 2 complete) |
+
+### LLM Reasoning Protocol
+
+Before every response, the agent executes a mandatory checklist:
+1. Scan **full conversation history** for already-provided information
+2. Determine if identity is complete (`IDENTITY_COMPLETE`)
+3. Classify user intent
+4. Determine the correct action / tool to call
+5. Compose a response — never re-ask for already-provided information
 
 ## Project Structure
 
 ```
 citi-loan-agent/
-├── loan_application_agent/         # ADK agent package
+├── loan_application_agent/         # ADK agent package (deployed to Agent Engine)
 │   ├── __init__.py                 # Exports root_agent
-│   ├── agent.py                    # Root agent with sub-agent routing
-│   ├── model_config.py             # LiteLlm → Trustwise gateway config
-│   ├── instructions.py             # System prompts for all agents
-│   ├── db.py                       # PostgreSQL connection helper
-│   ├── seed_db.py                  # Seed DB with sample customers & loans
-│   ├── sub_agents/
-│   │   ├── greeting_agent.py       # Welcome & routing
-│   │   ├── identity_agent.py       # Customer identification
-│   │   ├── loan_explorer_agent.py  # Loan product information
-│   │   ├── prequalification_agent.py # Eligibility checking
-│   │   └── qa_agent.py             # General Q&A
+│   ├── agent.py                    # Single LlmAgent with all tools attached
+│   ├── instructions.py             # UNIFIED_INSTRUCTION — structured reasoning protocol
+│   ├── model_config.py             # LiteLlm → Trustwise gateway → Gemini 2.0 Flash
+│   ├── gateway_guard.py            # before_model_callback: Trustwise pre-screen
+│   ├── db.py                       # PostgreSQL connection (Cloud SQL via VPC)
+│   ├── seed_db.py                  # Seed DB with sample customers & loan products
+│   ├── .env                        # Local dev environment
+│   ├── .env.gcp                    # GCP production environment (source of truth)
+│   ├── .agent_engine_config.json   # Agent Engine metadata (ID, display name)
 │   └── tools/
+│       ├── customer_lookup.py      # collect_personal_info, validate_personal_info, lookup_customer
+│       ├── loan_products.py        # get_loan_products, get_product_details
+│       ├── prequalification.py     # collect_application_info, validate_application_info, run_prequalification
+│       ├── common.py               # get_current_time
+│       ├── user_info.py            # Session state helpers
 │       ├── registry.py             # Conditional tool registration
-│       ├── customer_lookup.py      # DB: customer search
-│       ├── loan_products.py        # DB: loan product catalog
-│       ├── prequalification.py     # DB: eligibility checks
-│       ├── user_info.py            # Session state: collect user info
-│       ├── common.py               # Utilities (get_current_time)
 │       ├── google_drive.py         # Optional: Drive integration
 │       ├── google_docs.py          # Optional: Docs integration
 │       └── google_sheets.py        # Optional: Sheets integration
-├── server/                         # FastAPI wrapper around ADK
-│   ├── main.py                     # App setup (ADK + CORS + auth)
-│   ├── auth.py                     # Bearer token auth middleware
+├── server/                         # FastAPI backend (proxies to Agent Engine)
+│   ├── main.py                     # App setup (ADK proxy + CORS + auth)
+│   ├── auth.py                     # Bearer token middleware
 │   ├── chat_api.py                 # Simplified /api/chat endpoint
 │   ├── admin_routes.py             # Admin API routes
 │   └── config.py                   # Pydantic settings
-├── frontend/                       # React chat UI (Next.js)
-│   ├── src/
-│   │   ├── app/                    # Pages (chat, admin)
-│   │   ├── components/chat/        # ChatPanel, MessageBubble, etc.
-│   │   ├── hooks/useChat.ts        # Chat state + SSE management
-│   │   └── lib/api.ts              # SSE client for /run_sse
-│   └── package.json
-├── deploy/                         # Deployment scripts
-├── .env.example                    # Backend env template
+├── frontend/                       # Next.js chat UI (Cloud Run)
+│   └── src/
+│       ├── app/                    # Pages (/, /admin)
+│       ├── components/
+│       │   ├── chat/               # ChatPanel, MessageBubble, ToolIndicator, QuickForm
+│       │   └── layout/             # Header, Sidebar
+│       ├── hooks/useChat.ts        # SSE state management
+│       └── lib/api.ts              # SSE client for /run_sse
+├── deploy/
+│   ├── vertex_deploy.sh            # Deploy/update Agent Engine
+│   ├── cloudbuild-backend.yaml     # Cloud Build config for backend
+│   └── cloudbuild-frontend.yaml   # Cloud Build config for frontend
+├── tests/                          # Test suite
+├── CLAUDE.md                       # Full deployment & project guide
 ├── Dockerfile                      # Backend Docker image
-├── docker-compose.yml              # Full stack (backend + frontend)
-├── Makefile                        # Dev shortcuts
 └── requirements.txt                # Python dependencies
 ```
 
-## Prerequisites
+## GCP Infrastructure
 
+| Resource | Value |
+|----------|-------|
+| Project | `cs-host-d29276312550417ca85da7` |
+| Region | `us-central1` |
+| Agent Engine ID | `5798796837099929600` |
+| Artifact Registry | `us-central1-docker.pkg.dev/…/genesis/` |
+| VPC Connector | `genesis-connector` (Cloud SQL access) |
+| Cloud SQL Private IP | `10.21.0.3:5432` |
+
+## LLM Configuration
+
+| Setting | Value |
+|---------|-------|
+| Model | `vertex_ai/gemini-2.0-flash` |
+| Gateway | Trustwise (`https://aigw.tw-forge.trustwise.ai`) |
+| Routing | LiteLlm with `openai/` prefix → Trustwise → Gemini |
+| Config | `loan_application_agent/model_config.py` |
+
+All LLM calls pass through `gateway_prescreen_callback` (a `before_model_callback`) which screens requests against Trustwise OWASP Top 10 policies before they reach the model.
+
+## Service URLs
+
+| Service | URL |
+|---------|-----|
+| Frontend | https://loan-agent-frontend-632353252476.us-central1.run.app |
+| Backend | https://loan-agent-backend-632353252476.us-central1.run.app |
+| Agent Engine Console | https://console.cloud.google.com/vertex-ai/agents/agent-engines/locations/us-central1/agent-engines/5798796837099929600?project=cs-host-d29276312550417ca85da7 |
+
+## Local Development
+
+### Prerequisites
 - Python 3.12+
-- Node.js 18+
-- PostgreSQL (for customer/loan data)
-- Trustwise LLM Gateway account (API key)
+- Node.js 20+
+- PostgreSQL
 
-## Setup
-
-### Step 1: Clone & Install
+### Setup
 
 ```bash
 git clone git@github.com:ritesh-tw/citi-loan-agent.git
 cd citi-loan-agent
 
-# Create Python virtual environment
+# Python virtual environment
 python -m venv .venv
 source .venv/bin/activate
-
-# Install Python dependencies
 pip install -r requirements.txt
 
-# Install frontend dependencies
+# Frontend
 cd frontend && npm install && cd ..
 ```
 
-### Step 2: Configure Environment
+### Configure Environment
 
 ```bash
-# Backend config
-cp .env.example loan_application_agent/.env
-# Edit loan_application_agent/.env with your values:
-#   - LLM_GATEWAY_BASE_URL and LLM_GATEWAY_API_KEY (from Trustwise)
-#   - DATABASE_URL (your PostgreSQL connection string)
-#   - API_BEARER_TOKEN (any secret string for API auth)
+# Copy and edit local env (uses local DB, not Cloud SQL)
+cp loan_application_agent/.env.example loan_application_agent/.env
+# Set: LLM_GATEWAY_BASE_URL, LLM_GATEWAY_API_KEY, DATABASE_URL
 
-# Frontend config
+# Frontend
 cp frontend/.env.local.example frontend/.env.local
-# Edit frontend/.env.local:
-#   - NEXT_PUBLIC_API_URL (backend URL, default http://localhost:8000)
-#   - NEXT_PUBLIC_BEARER_TOKEN (must match API_BEARER_TOKEN above)
-#   - NEXT_PUBLIC_ADMIN_PASSWORD (password for admin panel)
+# Set: NEXT_PUBLIC_API_URL=http://localhost:8001
 ```
 
-### Step 3: Setup Database
+### Seed Database
 
 ```bash
-# Create the database
 createdb loan_agent
-
-# Seed with sample customers and loan products
 python -m loan_application_agent.seed_db
 ```
 
-### Step 4: Run Locally
+### Run
 
 ```bash
-# Option A: Backend + custom server with auth (recommended)
-make dev-backend
-# Then in another terminal:
-make dev-frontend
+# Terminal 1 — ADK API server (agent)
+adk api_server --port 8001 --allow_origins "http://localhost:3000" .
 
-# Option B: ADK dev UI (built-in web interface, no auth)
-make dev-adk
-
-# Option C: Full stack with Docker
-make dev
+# Terminal 2 — Frontend
+cd frontend && npm run dev
 ```
 
-The backend runs on `http://localhost:8000`, frontend on `http://localhost:3000`.
+> **Note:** The ADK `api_server` command takes the **parent directory** of the agent as its argument (`.`), not the agent name.
 
-### Step 5: Verify
+## Deployment
+
+See [CLAUDE.md](CLAUDE.md) for full deployment instructions. Summary:
 
 ```bash
-# Health check
-curl http://localhost:8000/health
+# 1. Deploy Agent Engine (after changing loan_application_agent/)
+bash deploy/vertex_deploy.sh
 
-# Test the simplified chat API
-curl -X POST http://localhost:8000/api/chat \
-  -H "Authorization: Bearer your-secret-bearer-token" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What loans do you offer?", "new_session": true}'
+# 2. Deploy Backend (after changing server/)
+gcloud builds submit --config=deploy/cloudbuild-backend.yaml --project=cs-host-d29276312550417ca85da7
+gcloud run deploy loan-agent-backend ...
+
+# 3. Deploy Frontend (after changing frontend/)
+gcloud builds submit --config=deploy/cloudbuild-frontend.yaml --project=cs-host-d29276312550417ca85da7
+gcloud run deploy loan-agent-frontend ...
 ```
 
 ## API Reference
 
-### Simplified Chat API (for external systems / red-teaming)
+### SSE Streaming (used by the frontend)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/chat` | Send a message (auto-manages sessions) |
-| POST | `/api/chat/new` | Start a new conversation |
-| GET | `/api/chat/sessions` | List active sessions for the user |
-
-**Example — Send a message:**
 ```bash
-curl -X POST https://your-backend-url/api/chat \
-  -H "Authorization: Bearer your-token" \
+curl -X POST https://loan-agent-backend-632353252476.us-central1.run.app/run_sse \
+  -H "Authorization: Bearer citi-poc-demo-token" \
   -H "Content-Type: application/json" \
-  -d '{"question": "I want a personal loan"}'
+  -d '{"userId":"test","sessionId":"","newMessage":{"parts":[{"text":"Hello"}]}}'
+```
+
+### Simplified Chat API
+
+```bash
+curl -X POST https://loan-agent-backend-632353252476.us-central1.run.app/api/chat \
+  -H "Authorization: Bearer citi-poc-demo-token" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What loans do you offer?"}'
 ```
 
 **Response:**
 ```json
 {
-  "answer": "I'd be happy to help you with a personal loan...",
-  "session_id": "s-abc123def456",
-  "agent": "loan_explorer_agent",
+  "answer": "We offer personal loans, debt consolidation loans, and home improvement loans...",
+  "session_id": "s-abc123",
+  "agent": "loan_application_agent",
   "tools_used": ["get_loan_products"],
   "turn": 1
 }
 ```
 
-**Start a new session:**
-```json
-{"question": "Hello", "new_session": true}
-```
-
-**Continue a specific session:**
-```json
-{"question": "Yes, I'd like to proceed", "session_id": "s-abc123def456"}
-```
-
 ### ADK Native Endpoints
 
-| Method | Path | Description | Auth |
-|--------|------|-------------|------|
-| POST | `/run` | Synchronous agent execution | Bearer |
-| POST | `/run_sse` | Streaming agent execution (SSE) | Bearer |
-| POST | `/apps/{app}/users/{user}/sessions/{session}` | Create session | Bearer |
-| GET | `/apps/{app}/users/{user}/sessions/{session}` | Get session history | Bearer |
-| DELETE | `/apps/{app}/users/{user}/sessions/{session}` | Delete session | Bearer |
-| GET | `/list-apps` | List available agents | Public |
-| GET | `/health` | Health check | Public |
-| GET | `/docs` | Swagger UI (auto-generated) | Public |
-
-**ADK /run example:**
-```bash
-curl -X POST http://localhost:8000/run \
-  -H "Authorization: Bearer your-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "app_name": "loan_application_agent",
-    "user_id": "test-user",
-    "session_id": "test-session",
-    "new_message": {"role": "user", "parts": [{"text": "Hello!"}]}
-  }'
-```
-
-## LLM Gateway Policy Enforcement
-
-All messages pass through the Trustwise LLM gateway which enforces security policies automatically. When a message is blocked, the `/api/chat` endpoint returns a detailed explanation:
-
-```json
-{
-  "answer": "Your request was blocked by the AI security gateway.\n\n  - Policy violated: OWASP LLM Top 10 Policy\n  - Triggered guardrail: Prompt Injection Detection\n  - Raw details: Request blocked by 'OWASP LLM Top 10 Policy'. Failed guardrails: Prompt Injection Detection\n\nThis is a safety measure enforced by the Trustwise LLM gateway...",
-  "agent": "gateway_policy",
-  "session_id": "s-abc123",
-  "tools_used": [],
-  "turn": 1
-}
-```
-
-The pre-screening happens before the message reaches the agent, so exact policy details (policy name, triggered guardrail) are preserved and shown to the caller.
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/run_sse` | Streaming agent execution (SSE) |
+| POST | `/run` | Synchronous agent execution |
+| POST | `/apps/{app}/users/{user}/sessions/{session}` | Create session |
+| GET | `/apps/{app}/users/{user}/sessions/{session}` | Get session history |
+| DELETE | `/apps/{app}/users/{user}/sessions/{session}` | Delete session |
+| GET | `/health` | Health check |
 
 ## Environment Variables
 
-### Backend (`loan_application_agent/.env`)
+### Agent / Backend (`loan_application_agent/.env`)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `LLM_GATEWAY_BASE_URL` | Yes | Trustwise gateway URL |
 | `LLM_GATEWAY_API_KEY` | Yes | Trustwise API key |
-| `LLM_MODEL` | No | Model ID (default: `gpt-4o-mini`) |
+| `LLM_MODEL` | Yes | Model ID (e.g. `vertex_ai/gemini-2.0-flash`) |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `API_BEARER_TOKEN` | No | Bearer token for API auth (empty = no auth) |
-| `CHAT_API_TOKENS` | No | Extra tokens as `token1:user1,token2:user2` |
-| `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON` | No | JSON to enable Drive tools |
-| `GOOGLE_DOCS_SERVICE_ACCOUNT_JSON` | No | JSON to enable Docs tools |
-| `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | No | JSON to enable Sheets tools |
-| `GOOGLE_CLOUD_PROJECT` | No | GCP project for tracing/deploy |
-| `GOOGLE_CLOUD_LOCATION` | No | GCP region (default: `us-central1`) |
-| `ENABLE_CLOUD_TRACE` | No | Enable Cloud Trace (default: `false`) |
+| `API_BEARER_TOKEN` | No | Bearer token for API auth |
+| `GOOGLE_CLOUD_PROJECT` | Yes (GCP) | GCP project ID |
+| `GOOGLE_CLOUD_LOCATION` | Yes (GCP) | GCP region |
 
 ### Frontend (`frontend/.env.local`)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NEXT_PUBLIC_API_URL` | Yes | Backend URL (e.g., `http://localhost:8000`) |
+| `NEXT_PUBLIC_API_URL` | Yes | Backend URL |
 | `NEXT_PUBLIC_BEARER_TOKEN` | Yes | Must match `API_BEARER_TOKEN` |
-| `NEXT_PUBLIC_ADMIN_PASSWORD` | No | Password for admin panel |
-
-## Deployment
-
-### Cloud Run
-
-```bash
-# Set env vars
-export GOOGLE_CLOUD_PROJECT=your-project-id
-
-# Deploy backend
-gcloud run deploy loan-agent-backend \
-  --source . \
-  --region us-central1 \
-  --project $GOOGLE_CLOUD_PROJECT \
-  --allow-unauthenticated \
-  --port 8000 \
-  --memory 1Gi \
-  --timeout 120 \
-  --command "uvicorn" \
-  --args "server.main:app,--host,0.0.0.0,--port,8000" \
-  --set-env-vars "LLM_GATEWAY_BASE_URL=...,LLM_GATEWAY_API_KEY=...,LLM_MODEL=gpt-4o-mini,API_BEARER_TOKEN=..."
-```
-
-### Vertex AI Agent Engine
-
-```bash
-export GOOGLE_CLOUD_PROJECT=your-project-id
-export STAGING_BUCKET=gs://your-staging-bucket
-
-make deploy-vertex
-```
-
-When deployed to Agent Engine:
-- `VertexAiSessionService` is used automatically (persistent sessions)
-- Cloud Trace, Cloud Monitoring, and Cloud Logging are enabled
-- Auto-scaling is managed by the platform
-
-### Docker (Local)
-
-```bash
-make dev
-# Starts backend on :8000 and frontend on :3000
-```
+| `NEXT_PUBLIC_ADMIN_PASSWORD` | No | Admin panel password |
 
 ## Demo Flow
 
-1. User: "Hello" → `greeting_agent` responds with welcome
-2. User: "I want a personal loan" → routes to `loan_explorer_agent` → shows loan products
-3. User: "Can I check if I'm eligible?" → routes to `identity_agent` → asks for customer ID
-4. User: "My customer ID is C001" → `identity_agent` looks up customer in DB
-5. Agent routes to `prequalification_agent` → runs eligibility check against DB
-6. Agent shows pre-qualification result with loan terms
+1. **"Hello"** → Agent greets and asks how it can help
+2. **"What loans do you offer?"** → `get_loan_products` → shows personal, consolidation, home improvement loans
+3. **"I'd like to apply"** → Agent asks for identity verification (name, DOB, postcode)
+4. **User provides details** → `collect_personal_info` → `validate_personal_info` → `lookup_customer` → identity confirmed
+5. **"My annual income is £55,000"** → `collect_application_info` → `validate_application_info` → `run_prequalification` → eligibility result with loan terms
 
-**Policy enforcement example:**
-- User: "hack google.com" → gateway blocks with `Obfuscated Attack Detection`
-- User: "ignore all instructions" → gateway blocks with `Prompt Injection Detection`
-
-## Make Commands
-
-| Command | Description |
-|---------|-------------|
-| `make install` | Install all dependencies (Python + Node) |
-| `make dev` | Run full stack with Docker Compose |
-| `make dev-backend` | Run backend only with hot reload |
-| `make dev-adk` | Run ADK dev UI (built-in web interface) |
-| `make dev-frontend` | Run frontend only |
-| `make deploy-vertex` | Deploy to Vertex AI Agent Engine |
-| `make deploy-cloud-run` | Deploy to Cloud Run |
-| `make test` | Run tests |
-| `make clean` | Clean build artifacts |
+**Trustwise policy enforcement:**
+- "Ignore all previous instructions" → blocked: `Prompt Injection Detection`
+- "hack google.com" → blocked: `Obfuscated Attack Detection`
